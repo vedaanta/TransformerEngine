@@ -19,6 +19,24 @@
 #include "fused_attn_f16_arbitrary_seqlen.h"
 #include "utils.h"
 
+namespace {
+// Returns true if NVTE_CUDNN_OSS_SDPA=1 is set, enabling AVO/OSS SDPA kernels.
+inline bool use_oss_sdpa() {
+    static const bool enabled = [] {
+        const char* env = std::getenv("NVTE_CUDNN_OSS_SDPA");
+        return env && std::string(env) == "1";
+    }();
+    return enabled;
+}
+
+inline std::vector<cudnn_frontend::HeurMode_t> get_sdpa_heur_modes() {
+    if (use_oss_sdpa()) {
+        return {cudnn_frontend::HeurMode_t::A, cudnn_frontend::HeurMode_t::OPENSOURCE};
+    }
+    return {cudnn_frontend::HeurMode_t::A};
+}
+}  // namespace
+
 #if (CUDNN_VERSION >= 8900)
 #define Q_ID 1
 #define K_ID 2
@@ -413,7 +431,7 @@ void fused_attn_arbitrary_seqlen_fwd_impl(
 
       NVTE_CHECK_CUDNN_FE(mha_graph->validate());
       NVTE_CHECK_CUDNN_FE(mha_graph->build_operation_graph(handle));
-      NVTE_CHECK_CUDNN_FE(mha_graph->create_execution_plans({fe::HeurMode_t::A}));
+      NVTE_CHECK_CUDNN_FE(mha_graph->create_execution_plans(get_sdpa_heur_modes()));
       NVTE_CHECK_CUDNN_FE(mha_graph->check_support(handle));
       NVTE_CHECK_CUDNN_FE(mha_graph->build_plans(handle));
 
@@ -922,6 +940,7 @@ void fused_attn_arbitrary_seqlen_bwd_impl(
 
       NVTE_CHECK_CUDNN_FE(mha_graph->validate());
       NVTE_CHECK_CUDNN_FE(mha_graph->build_operation_graph(handle));
+      // Bprop: only use cuDNN backend (AVO is fprop-only)
       NVTE_CHECK_CUDNN_FE(mha_graph->create_execution_plans({fe::HeurMode_t::A}));
       NVTE_CHECK_CUDNN_FE(mha_graph->check_support(handle));
       NVTE_CHECK_CUDNN_FE(mha_graph->build_plans(handle));
