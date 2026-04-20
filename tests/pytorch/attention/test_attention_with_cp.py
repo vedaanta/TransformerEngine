@@ -384,3 +384,57 @@ def test_cp_with_fused_attention(
             log_level=pytest_logging_level,
         ),
     )
+
+
+model_configs_fp32_partial_output = {
+    "cp_1_0": ModelConfig(2, 4096, 12, 128, attn_mask_type="causal", return_max_logit=True),
+    "cp_1_1": ModelConfig(2, 4096, 12, 128, return_max_logit=True),
+    "cp_2_0": ModelConfig(2, 4096, 12, 128, num_gqa_groups=2, attn_mask_type="causal"),
+}
+
+
+@pytest.mark.skipif(get_cudnn_version() < (8, 9, 7), reason="cuDNN 8.9.7+ is required.")
+@pytest.mark.skipif(get_device_compute_capability() < (8, 0), reason="CP tests require sm80+.")
+@pytest.mark.parametrize("dtype", ["bf16", "fp16"])
+@pytest.mark.parametrize("model", model_configs_fp32_partial_output.keys())
+@pytest.mark.parametrize("qkv_format", ["sbhd", "thd"])
+@pytest.mark.parametrize("cp_comm_type", ["p2p", "a2a+p2p"])
+def test_cp_with_fused_attention_fp32_partial_output(dtype, model, qkv_format, cp_comm_type):
+    """Test that FP32 partial outputs in fprop CP P2P produce numerically correct results."""
+    num_gpus = 4 if cp_comm_type == "a2a+p2p" else 2
+    if num_gpus > torch.cuda.device_count():
+        pytest.skip(f"Test requires {num_gpus} GPUs, but found {torch.cuda.device_count()}")
+
+    if qkv_format == "thd" and get_device_compute_capability() < (9, 0):
+        pytest.skip("THD format is only supported on sm90+!")
+    if cp_comm_type == "a2a+p2p" and qkv_format == "thd":
+        pytest.skip(
+            "CP implementation with QKVO A2A+P2P (Hierarchical A2A) does not support THD format yet!"
+        )
+
+    config = model_configs_fp32_partial_output[model]
+    config.context_parallel = True
+    config.cp_comm_type = cp_comm_type
+
+    dtypes = {"fp16": torch.float16, "bf16": torch.bfloat16}
+    available_backends, _, fused_attn_backends = get_available_attention_backends(
+        config,
+        qkv_dtype=dtypes[dtype],
+        qkv_layout="_".join([qkv_format] * 3),
+    )
+    _, fused_attn_supported, _ = available_backends
+    if not fused_attn_supported:
+        pytest.skip("No fused attention backend available.")
+
+    run_distributed(
+        get_bash_arguments(
+            num_gpus_per_node=num_gpus,
+            dtype=dtype,
+            model=model,
+            qkv_format=qkv_format,
+            kernel_backend="FusedAttention",
+            cp_comm_type=cp_comm_type,
+            fp32_partial_output=True,
+            log_level=pytest_logging_level,
+        ),
+    )
