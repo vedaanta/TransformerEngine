@@ -180,12 +180,14 @@ def run_dpa_with_cp(
     scaling_mode="delayed",
     f16_O="False",
     is_training="True",
+    fp32_partial_output="False",
     log_level=logging.WARNING,
 ):
     """Test DotProductAttention module with context parallelism"""
     logging.root.setLevel(log_level)
     # When is_training is False, gradient outputs are None.
     is_training = is_training == "True"
+    fp32_partial_output = fp32_partial_output == "True"
 
     # set up environment variables and config
     fp8_bwd = fp8_bwd == "True" and dtype == "fp8"
@@ -469,6 +471,7 @@ def run_dpa_with_cp(
             cu_seqlens_q_padded=cu_seqlens_q_padded,
             cu_seqlens_kv_padded=cu_seqlens_kv_padded,
             fp8_output=fp8_mha,
+            fp32_partial_output=fp32_partial_output,
         )
         if config.return_max_logit:
             out_, max_logit_ = out_

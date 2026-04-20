@@ -1867,6 +1867,7 @@ class FusedAttention(torch.nn.Module):
         inference_params: Optional[InferenceParams] = None,
         softmax_offset: torch.Tensor = None,
         fp8_output: bool = False,
+        fp32_partial_output: bool = False,
     ) -> torch.Tensor:
         """fused attention fprop"""
         assert (
@@ -2034,6 +2035,7 @@ class FusedAttention(torch.nn.Module):
                     fp8_output=fp8_output,
                     layer_number=self.layer_number,
                     return_max_logit=self.return_max_logit,
+                    fp32_partial_output=fp32_partial_output,
                 )
         else:
             with self.attention_dropout_ctx():

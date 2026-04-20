@@ -794,6 +794,7 @@ def cp_p2p_fwd_fused_attn(
     cu_seqlens_q_per_step,
     cu_seqlens_kv_per_step,
     section,
+    fp32_partial_output=False,
 ):
     """Per-tile forward call of CP P2P with FusedAttention backend"""
     attn_bias_inputs = None
@@ -884,7 +885,7 @@ def cp_p2p_fwd_fused_attn(
         q_part,
         k_part,
         v_part,
-        fake_dtype=fwd_nominal_dtype,
+        fake_dtype=torch.float32 if (fp32_partial_output and not fp8) else fwd_nominal_dtype,
         fused_attention_backend=fused_attn_backend,
         attn_scale=softmax_scale,
         dropout=dropout_p,
@@ -1287,6 +1288,7 @@ class AttnFuncWithCPAndKVP2P(torch.autograd.Function):
         use_flash_attn_3,
         fp8_output,
         layer_number,
+        fp32_partial_output=False,
     ):
         # pylint: disable=missing-function-docstring
 
@@ -1680,7 +1682,8 @@ class AttnFuncWithCPAndKVP2P(torch.autograd.Function):
                                     attn_biases[i],
                                     max_logit_per_step[i],
                                 ) = cp_p2p_fwd_fused_attn(
-                                    *fused_attn_inputs, *prepare_outputs, section
+                                    *fused_attn_inputs, *prepare_outputs, section,
+                                    fp32_partial_output=fp32_partial_output,
                                 )
                             else:
                                 out_per_step[i], softmax_lse_per_step[i], rng_states[i] = (
@@ -1707,7 +1710,8 @@ class AttnFuncWithCPAndKVP2P(torch.autograd.Function):
                                     attn_biases[i],
                                     max_logit_per_step[i],
                                 ) = cp_p2p_fwd_fused_attn(
-                                    *fused_attn_inputs, *prepare_outputs, section
+                                    *fused_attn_inputs, *prepare_outputs, section,
+                                    fp32_partial_output=fp32_partial_output,
                                 )
                             else:
                                 out_per_step[i], softmax_lse_per_step[i], rng_states[i] = (
@@ -1734,7 +1738,8 @@ class AttnFuncWithCPAndKVP2P(torch.autograd.Function):
                                     attn_biases[i],
                                     max_logit_per_step[i],
                                 ) = cp_p2p_fwd_fused_attn(
-                                    *fused_attn_inputs, *prepare_outputs, section
+                                    *fused_attn_inputs, *prepare_outputs, section,
+                                    fp32_partial_output=fp32_partial_output,
                                 )
                             else:
                                 out_per_step[i], softmax_lse_per_step[i], rng_states[i] = (
@@ -1761,7 +1766,10 @@ class AttnFuncWithCPAndKVP2P(torch.autograd.Function):
                                 rng_states[i],
                                 attn_biases[i],
                                 max_logit_per_step[i],
-                            ) = cp_p2p_fwd_fused_attn(*fused_attn_inputs, *prepare_outputs, section)
+                            ) = cp_p2p_fwd_fused_attn(
+                                *fused_attn_inputs, *prepare_outputs, section,
+                                fp32_partial_output=fp32_partial_output,
+                            )
                         else:
                             out_per_step[i], softmax_lse_per_step[i], rng_states[i] = (
                                 cp_p2p_fwd_flash_attn(*flash_attn_inputs, *prepare_outputs, section)
@@ -1795,14 +1803,12 @@ class AttnFuncWithCPAndKVP2P(torch.autograd.Function):
                         softmax_lse = torch.clone(softmax_lse_per_step[0])
                         if qkv_format == "thd":
                             if enable_mla:
-                                out = torch.zeros_like(v if not fp8 else out_per_step[0]).view(
-                                    v_shape
-                                )
+                                ref = out_per_step[0] if (fp8 or fp32_partial_output) else v
+                                out = torch.zeros_like(ref).view(v_shape)
                             else:
                                 # MHA or GQA
-                                out = torch.zeros_like(q if not fp8 else out_per_step[0]).view(
-                                    q.shape
-                                )
+                                ref = out_per_step[0] if (fp8 or fp32_partial_output) else q
+                                out = torch.zeros_like(ref).view(q.shape)
                     elif (i - 1) <= rank or not causal:
                         flash_attn_fwd_softmax_lse_correction(
                             softmax_lse, softmax_lse_per_step[i - 1]
@@ -2761,6 +2767,7 @@ class AttnFuncWithCPAndKVP2P(torch.autograd.Function):
             None,
             None,
             None,
+            None,  # fp32_partial_output
         )
 
 
@@ -3962,6 +3969,7 @@ def attn_forward_func_with_cp(
     fp8_output=False,
     layer_number=1,
     return_max_logit=False,
+    fp32_partial_output=False,
 ) -> torch.Tensor:
     """
     Attention implementation with context parallelism (CP). CP partitions tensors along the sequence
@@ -4126,6 +4134,7 @@ def attn_forward_func_with_cp(
             use_flash_attn_3,
             fp8_output,
             layer_number,
+            fp32_partial_output,
         ]
         out = AttnFuncWithCPAndKVP2P.apply(*args)
     elif cp_comm_type == "all_gather":
